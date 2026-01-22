@@ -1,0 +1,171 @@
+# Data Download and Ingestion Configuration
+# This file drives all data fetching operations for the exoplanet detection pipeline
+
+# Global settings
+global:
+  data_root: "data"
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  metadata_dir: "data/metadata"
+  logs_dir: "outputs/logs"
+  
+  # Retry settings for network operations
+  retry:
+    max_attempts: 3
+    backoff_factor: 2.0
+    timeout_seconds: 300
+  
+  # Progress reporting
+  show_progress: true
+  log_level: "INFO"
+
+# Space-based photometry data sources
+photometry:
+  # Kepler Space Telescope
+  kepler:
+    enabled: true
+    # Target selection: either list of KIC IDs or sky region
+    targets:
+      # Option 1: List of specific KIC IDs
+      kic_ids: []  # e.g., [11442793, 11442794]
+      # Option 2: Sky region (ra, dec, radius in degrees)
+      sky_region:
+        ra: null
+        dec: null
+        radius_deg: null
+    
+    # Data products to fetch
+    data_products:
+      - "SAP"      # Simple Aperture Photometry
+      - "PDCSAP"   # Pre-search Data Conditioning SAP
+    
+    # Cadence (auto-detect from available data)
+    cadence: "auto"  # Options: "auto", "short", "long"
+    
+    # Quality filtering
+    quality_filtering: true
+    quality_flags: []  # Empty list = use default good quality flags
+    
+    # Output paths (relative to data_root)
+    output:
+      raw: "kepler"
+      processed: "kepler"
+      metadata: "kepler.json"
+  
+  # TESS (Transiting Exoplanet Survey Satellite)
+  tess:
+    enabled: true
+    # Target selection: either list of TIC IDs or sky region
+    targets:
+      # Option 1: List of specific TIC IDs
+      tic_ids: []  # e.g., [25155310, 25155311]
+      # Option 2: Sky region
+      sky_region:
+        ra: null
+        dec: null
+        radius_deg: null
+    
+    # Sectors to download (empty = all available)
+    sectors: []
+    
+    # Cadence options
+    cadence: "auto"  # Options: "auto", "short", "fast"
+    
+    # Data products
+    data_products:
+      - "SAP"
+      - "PDCSAP"
+    
+    # Quality filtering
+    quality_filtering: true
+    
+    # Output paths
+    output:
+      raw: "tess"
+      processed: "tess"
+      metadata: "tess.json"
+
+# Exoplanet ground-truth labels
+exoplanet_archive:
+  enabled: true
+  
+  # NASA Exoplanet Archive REST API endpoint
+  api_base_url: "https://exoplanetarchive.ipac.caltech.edu/cgi-bin/nstedAPI/nph-nstedAPI"
+  
+  # Tables to fetch
+  tables:
+    - name: "exoplanets"
+      endpoint: "exoplanets"
+      # Columns to fetch (empty = all columns)
+      columns: []
+      # Filters (optional)
+      filters: {}
+    
+    - name: "composite"
+      endpoint: "exoplanets"
+      format: "composite"
+      columns: []
+      filters: {}
+  
+  # Output paths
+  output:
+    processed: "exoplanet_labels"
+    metadata: "exoplanet_archive.json"
+
+# Radial velocity data (optional)
+radial_velocity:
+  enabled: false  # Set to true to enable RV data fetching
+  
+  # Instruments to fetch from
+  instruments:
+    - name: "HARPS"
+      archive: "ESO"
+      enabled: true
+    
+    - name: "ESPRESSO"
+      archive: "ESO"
+      enabled: true
+  
+  # Target selection (by star name or coordinates)
+  targets:
+    star_names: []  # e.g., ["HD 209458", "HD 189733"]
+    coordinates: []  # List of (ra, dec) tuples in degrees
+  
+  # Output paths
+  output:
+    raw: "radial_velocity"
+    processed: "radial_velocity"
+    metadata: "radial_velocity.json"
+
+# Stellar context data (optional)
+stellar_context:
+  enabled: false  # Set to true to enable Gaia data fetching
+  
+  # Gaia archive settings
+  gaia:
+    enabled: true
+    # Query radius for cross-matching (arcseconds)
+    crossmatch_radius_arcsec: 5.0
+    
+    # Parameters to fetch
+    parameters:
+      - "ra"
+      - "dec"
+      - "parallax"
+      - "parallax_error"
+      - "pmra"
+      - "pmdec"
+      - "teff_val"
+      - "teff_percentile_lower"
+      - "teff_percentile_upper"
+      - "radius_val"
+      - "radius_percentile_lower"
+      - "radius_percentile_upper"
+      - "lum_val"
+      - "lum_percentile_lower"
+      - "lum_percentile_upper"
+    
+    # Output paths
+    output:
+      processed: "stellar_context"
+      metadata: "gaia.json"

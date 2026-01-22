@@ -1,0 +1,5 @@
+injection_recovery: true
+false_positive_analysis: true
+baseline_methods:
+  - bls
+  - lomb_scargle

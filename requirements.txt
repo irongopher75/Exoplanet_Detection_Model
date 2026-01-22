@@ -1,0 +1,15 @@
+torch
+numpy
+scipy
+astropy
+lightkurve
+pymc
+numpyro
+arviz
+matplotlib
+pyyaml
+hydra-core
+tqdm
+astroquery
+requests
+pandas

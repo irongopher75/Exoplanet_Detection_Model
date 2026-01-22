@@ -1,0 +1,4 @@
+method: variational
+num_samples: 500
+epistemic: true
+aleatoric: true

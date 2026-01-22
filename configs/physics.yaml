@@ -1,0 +1,3 @@
+kepler_loss_weight: 1.0
+transit_loss_weight: 0.5
+limb_darkening_model: quadratic

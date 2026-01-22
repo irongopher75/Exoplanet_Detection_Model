@@ -1,0 +1,3 @@
+enabled: true
+model: gaussian_process
+latent_dim: 4
