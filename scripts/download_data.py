@@ -338,6 +338,12 @@ def main():
     # Set up logging
     logger = setup_logging(config.global_config)
     
+    # Set random seeds for reproducibility
+    from src.utils.seeding import set_all_seeds
+    seed = getattr(config.global_config, 'seed', 42)
+    set_all_seeds(seed)
+    logger.info(f"Global seed set to {seed}")
+    
     logger.info("=" * 60)
     logger.info("Exoplanet Detection Data Download")
     logger.info("=" * 60)
@@ -412,6 +418,14 @@ def main():
         }, f, indent=2, default=str)
     
     logger.info(f"Summary saved to {summary_path}")
+    
+    # Save config snapshot for traceability
+    import shutil
+    metadata_dir = Path(config.global_config.metadata_dir)
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    config_copy_path = metadata_dir / f"config_{timestamp}.yaml"
+    shutil.copy(args.config, config_copy_path)
+    logger.info(f"Saved config snapshot to {config_copy_path}")
     
     # Exit with error code if any failures
     if total_errors > 0:

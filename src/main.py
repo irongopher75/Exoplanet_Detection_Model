@@ -61,6 +61,12 @@ def train_pinn(
     with open(config_path, 'r') as f:
         train_config = yaml.safe_load(f)
     
+    # Set random seeds for reproducibility
+    from src.utils.seeding import set_all_seeds
+    seed = train_config.get('seed', 42)
+    set_all_seeds(seed)
+    logger.info(f"Training seed set to {seed}")
+    
     # Setup device
     if device == "auto":
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -81,9 +87,17 @@ def train_pinn(
         logger.error("No light curve files found. Run data download first.")
         return
     
+    # Apply configurable file limit (if specified)
+    max_files = train_config.get('max_files', None)
+    if max_files is not None:
+        lc_files = lc_files[:max_files]
+        logger.info(f"Limiting training to {max_files} light curves")
+    else:
+        logger.info("Using all available light curves")
+    
     # Load and standardize light curves
     light_curves = []
-    for lc_file in lc_files[:100]:  # Limit for now
+    for lc_file in lc_files:
         try:
             lc = load_and_standardize(lc_file)
             light_curves.append(lc)
@@ -106,12 +120,12 @@ def train_pinn(
     train_dataset = LightCurveDataset(
         train_lcs,
         max_length=train_config.get('max_length', 1000),
-        normalize=True
+        normalize_time=train_config.get('normalize_time', True)
     )
     val_dataset = LightCurveDataset(
         val_lcs,
         max_length=train_config.get('max_length', 1000),
-        normalize=True
+        normalize_time=train_config.get('normalize_time', True)
     )
     
     train_loader = DataLoader(
@@ -148,6 +162,18 @@ def train_pinn(
         logger=logger,
         config=train_config
     )
+    
+    # Save config snapshot for traceability
+    import shutil
+    from datetime import datetime
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    metadata_dir = output_path / "metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    config_copy_path = metadata_dir / f"config_{timestamp}.yaml"
+    shutil.copy(config_path, config_copy_path)
+    logger.info(f"Saved config snapshot to {config_copy_path}")
     
     # Train
     trainer.train(

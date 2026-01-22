@@ -372,7 +372,7 @@ class LightCurveDataset(Dataset):
         self,
         light_curves: list,
         max_length: Optional[int] = None,
-        normalize: bool = True
+        normalize_time: bool = True
     ):
         """
         Initialize dataset.
@@ -383,12 +383,18 @@ class LightCurveDataset(Dataset):
             List of StandardizedLightCurve objects.
         max_length : int, optional
             Maximum sequence length (truncate or pad).
-        normalize : bool
+        normalize_time : bool
             Whether to normalize time to [0, 1].
+            
+        Warning
+        -------
+        If normalize_time=True, time is normalized to [0, 1] which loses
+        absolute time scale. Period predictions must be interpreted in
+        ORIGINAL time units using stored normalization metadata.
         """
         self.light_curves = light_curves
         self.max_length = max_length
-        self.normalize = normalize
+        self.normalize_time = normalize_time
     
     def __len__(self) -> int:
         return len(self.light_curves)
@@ -411,9 +417,30 @@ class LightCurveDataset(Dataset):
             dtype=torch.float32
         )
         
-        # Normalize time to [0, 1] if requested
-        if self.normalize and len(time) > 0:
-            time = (time - time.min()) / (time.max() - time.min() + 1e-8)
+        # IMPORTANT: Time normalization handling
+        # If normalize_time=True, time is scaled to [0, 1] which loses absolute scale.
+        # Any period predictions must be interpreted in ORIGINAL time units.
+        # Downstream code must inverse-transform using stored metadata.
+        time_normalization = None
+        if self.normalize_time and len(time) > 0:
+            time_min = time.min()
+            time_max = time.max()
+            time_range = time_max - time_min
+            
+            if time_range <= 0:
+                raise ValueError(
+                    f"Time array has zero range (min={time_min}, max={time_max}); "
+                    "cannot normalize. Check for duplicate time values."
+                )
+            
+            time = (time - time_min) / time_range
+            
+            # Store normalization parameters for inverse transform
+            time_normalization = {
+                "min": float(time_min.item()),
+                "max": float(time_max.item()),
+                "range": float(time_range.item())
+            }
         
         # Pad or truncate to max_length
         if self.max_length is not None:
@@ -429,9 +456,14 @@ class LightCurveDataset(Dataset):
                 flux = F.pad(flux, (0, pad_length), mode='constant', value=flux[-1])
                 flux_err = F.pad(flux_err, (0, pad_length), mode='constant', value=flux_err[-1])
         
+        # Update metadata with normalization info
+        metadata = lc.metadata.copy() if lc.metadata else {}
+        if time_normalization is not None:
+            metadata['time_normalization'] = time_normalization
+        
         return {
             'time': time,
             'flux': flux,
             'flux_err': flux_err,
-            'metadata': lc.metadata
+            'metadata': metadata
         }
