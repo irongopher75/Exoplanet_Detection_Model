@@ -84,7 +84,7 @@ def mandel_agol_transit_torch(
         time = time.expand(batch_size, -1)  # (batch, time_steps)
     else:
         # Already batched: (batch, time_steps)
-    n_times = time.shape[-1]
+        n_times = time.shape[-1]
     
     # Expand parameters to match time dimension
     period = period.unsqueeze(-1)  # (batch, 1)
@@ -126,9 +126,9 @@ def mandel_agol_transit_torch(
         u2 = u2.unsqueeze(-1)  # (batch, 1)
     
     depth = rp_rs ** 2 * (1.0 - u1 / 3.0 - u2 / 6.0)  # (batch, 1)
-        
-        # Apply depth where in transit
-        flux = torch.where(in_transit, 1.0 - depth, flux)
+    
+    # Apply depth where in transit
+    flux = torch.where(in_transit, 1.0 - depth, flux)
     
     return flux  # (batch, time_steps)
 

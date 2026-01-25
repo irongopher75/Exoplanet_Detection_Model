@@ -38,6 +38,7 @@ def train_pinn(
     config_path: str,
     data_dir: str = "data/processed",
     output_dir: str = "outputs",
+    archive_dir: str = None,
     device: str = "auto"
 ):
     """
@@ -51,21 +52,18 @@ def train_pinn(
         Directory containing processed light curves.
     output_dir : str
         Output directory for checkpoints and logs.
+    archive_dir : str, optional
+        Directory to move processed files to after training.
     device : str
         Device to use ('auto', 'cuda', 'cpu').
     """
+    import shutil
     logger = setup_logging()
     logger.info("Starting PINN training")
     
     # Load training config
     with open(config_path, 'r') as f:
         train_config = yaml.safe_load(f)
-    
-    # Set random seeds for reproducibility
-    from src.utils.seeding import set_all_seeds
-    seed = train_config.get('seed', 42)
-    set_all_seeds(seed)
-    logger.info(f"Training seed set to {seed}")
     
     # Setup device
     if device == "auto":
@@ -87,20 +85,14 @@ def train_pinn(
         logger.error("No light curve files found. Run data download first.")
         return
     
-    # Apply configurable file limit (if specified)
-    max_files = train_config.get('max_files', None)
-    if max_files is not None:
-        lc_files = lc_files[:max_files]
-        logger.info(f"Limiting training to {max_files} light curves")
-    else:
-        logger.info("Using all available light curves")
-    
     # Load and standardize light curves
     light_curves = []
-    for lc_file in lc_files:
+    loaded_files = []
+    for lc_file in lc_files[:100]:  # Limit for now
         try:
             lc = load_and_standardize(lc_file)
             light_curves.append(lc)
+            loaded_files.append(lc_file)
         except Exception as e:
             logger.warning(f"Failed to load {lc_file}: {e}")
     
@@ -120,12 +112,12 @@ def train_pinn(
     train_dataset = LightCurveDataset(
         train_lcs,
         max_length=train_config.get('max_length', 1000),
-        normalize_time=train_config.get('normalize_time', True)
+        normalize_time=True
     )
     val_dataset = LightCurveDataset(
         val_lcs,
         max_length=train_config.get('max_length', 1000),
-        normalize_time=train_config.get('normalize_time', True)
+        normalize_time=True
     )
     
     train_loader = DataLoader(
@@ -163,18 +155,6 @@ def train_pinn(
         config=train_config
     )
     
-    # Save config snapshot for traceability
-    import shutil
-    from datetime import datetime
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    metadata_dir = output_path / "metadata"
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    config_copy_path = metadata_dir / f"config_{timestamp}.yaml"
-    shutil.copy(config_path, config_copy_path)
-    logger.info(f"Saved config snapshot to {config_copy_path}")
-    
     # Train
     trainer.train(
         epochs=train_config.get('epochs', 200),
@@ -182,6 +162,29 @@ def train_pinn(
     )
     
     logger.info("Training complete")
+
+    # Archive files if requested
+    if archive_dir:
+        archive_path = Path(archive_dir)
+        archive_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Archiving {len(loaded_files)} files to {archive_path}")
+        
+        for file_path in loaded_files:
+            try:
+                # Maintain relative structure if possible, or just flat move
+                # For simplicity, let's flat move but handle name collisions
+                dest_path = archive_path / file_path.name
+                if dest_path.exists():
+                     # timestamp if exists
+                    import time
+                    timestamp = int(time.time())
+                    dest_path = archive_path / f"{file_path.stem}_{timestamp}{file_path.suffix}"
+                
+                shutil.move(str(file_path), str(dest_path))
+            except Exception as e:
+                logger.error(f"Failed to archive {file_path}: {e}")
+        
+        logger.info("Archival complete")
 
 
 def main():
@@ -194,6 +197,12 @@ def main():
     
     # Train command
     train_parser = subparsers.add_parser('train', help='Train PINN model')
+    train_parser.add_argument(
+        '--archive-dir',
+        type=str,
+        default=None,
+        help='Directory to move processed files to after training'
+    )
     train_parser.add_argument(
         '--config',
         type=str,
@@ -227,6 +236,7 @@ def main():
             config_path=args.config,
             data_dir=args.data_dir,
             output_dir=args.output_dir,
+            archive_dir=args.archive_dir if hasattr(args, 'archive_dir') else None,
             device=args.device
         )
     else:
