@@ -46,7 +46,7 @@ python scripts\demonstrate_aging.py
 Explore the effects of telescope aging on detection confidence in real-time.
 **Mac/Linux**
 ```bash
-streamlit run scripts/dashboard.py
+python3 -m streamlit run scripts/dashboard.py
 ```
 
 **Windows**
