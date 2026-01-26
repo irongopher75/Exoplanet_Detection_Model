@@ -51,14 +51,32 @@ def process_all_sh_files(
     # Check for existing processed files if resuming
     existing_files = set()
     if resume:
-        existing_npz = list(processed_dir.glob("*.npz"))
-        existing_files = {f.stem for f in existing_npz}
-        logger.info(f"Found {len(existing_files)} already processed files. Will NOT skip downloads if raw exists, ensuring processed regen.")
+        # Search recursively in processed, archive, and test
+        dirs_to_check = [
+            processed_dir,
+            Path("data/archive"),
+            Path("data/test")
+        ]
+        
+        for d in dirs_to_check:
+            if d.exists():
+                existing_npz = list(d.glob("**/*.npz"))
+                existing_files.update({f.stem for f in existing_npz})
+                
+        logger.info(f"Found {len(existing_files)} already processed/archived/tested files. These will be skipped.")
+    
+    # Create timestamped batch directory
+    import datetime
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    batch_dir = processed_dir / f"batch_{timestamp}"
     
     # Create directories
     raw_tess_dir = raw_dir / "tess"
     raw_tess_dir.mkdir(parents=True, exist_ok=True)
-    processed_dir.mkdir(parents=True, exist_ok=True)
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Update processed_dir to the batch directory for the actual save operation
+    target_processed_dir = batch_dir
     
     # Process URLs
     successful_downloads = 0
@@ -90,7 +108,7 @@ def process_all_sh_files(
         successful_downloads += 1
         
         # Process FITS file
-        processed_path = process_fits_file(fits_path, processed_dir)
+        processed_path = process_fits_file(fits_path, target_processed_dir)
         if processed_path is None:
             failed += 1
             continue
@@ -115,7 +133,7 @@ def process_all_sh_files(
     logger.info(f"  Skipped (already exists): {skipped:,}")
     logger.info(f"  Failed: {failed:,}")
     logger.info(f"")
-    logger.info(f"Processed files saved to: {processed_dir}")
+    logger.info(f"Processed files saved to: {target_processed_dir}")
     logger.info(f"Raw FITS files saved to: {raw_tess_dir}")
 
 

@@ -65,6 +65,8 @@ def main():
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--archive-dir', type=str, default=None, help='Directory to move processed files to after training')
+    parser.add_argument('--test-dir', type=str, default='data/test', help='Directory to reserve test files')
+    parser.add_argument('--n-test-files', type=int, default=2, help='Number of files to reserve for testing')
     
     args = parser.parse_args()
     
@@ -86,6 +88,8 @@ def main():
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         archive_dir=args.archive_dir,
+        test_dir=args.test_dir,
+        n_test_files=args.n_test_files,
         device="auto"
     )
 

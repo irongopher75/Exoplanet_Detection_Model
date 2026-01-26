@@ -39,6 +39,8 @@ def train_pinn(
     data_dir: str = "data/processed",
     output_dir: str = "outputs",
     archive_dir: str = None,
+    test_dir: str = "data/test",
+    n_test_files: int = 2,
     device: str = "auto"
 ):
     """
@@ -54,6 +56,10 @@ def train_pinn(
         Output directory for checkpoints and logs.
     archive_dir : str, optional
         Directory to move processed files to after training.
+    test_dir : str
+        Directory to save reserved test files for manual inspection.
+    n_test_files : int
+        Number of files to reserve for testing from this batch.
     device : str
         Device to use ('auto', 'cuda', 'cpu').
     """
@@ -88,7 +94,7 @@ def train_pinn(
     # Load and standardize light curves
     light_curves = []
     loaded_files = []
-    for lc_file in lc_files[:100]:  # Limit for now
+    for lc_file in lc_files:  # Process all available files
         try:
             lc = load_and_standardize(lc_file)
             light_curves.append(lc)
@@ -101,6 +107,22 @@ def train_pinn(
     if len(light_curves) == 0:
         logger.error("No valid light curves loaded.")
         return
+        
+    # Reserve test data
+    test_lcs = []
+    test_files = []
+    
+    if n_test_files > 0:
+        import random
+        # Select indices to reserve for testing
+        test_indices = random.sample(range(len(light_curves)), min(n_test_files, len(light_curves)))
+        test_indices.sort(reverse=True) # Sort reverse to pop correctly
+        
+        for idx in test_indices:
+            test_lcs.append(light_curves.pop(idx))
+            test_files.append(loaded_files.pop(idx))
+            
+        logger.info(f"Reserved {len(test_files)} light curves for manual testing in {test_dir}")
     
     # Create datasets
     train_size = int(0.8 * len(light_curves))
@@ -162,12 +184,29 @@ def train_pinn(
     )
     
     logger.info("Training complete")
+    
+    # Handle Test Data Reservation
+    if test_files and test_dir:
+        test_path = Path(test_dir)
+        test_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Storing {len(test_files)} test datasets in {test_path}")
+        
+        for file_path in test_files:
+            try:
+                dest_path = test_path / file_path.name
+                shutil.move(str(file_path), str(dest_path))
+                # Also move metadata if it exists
+                meta_file = file_path.with_suffix('.json')
+                if meta_file.exists():
+                    shutil.move(str(meta_file), str(test_path / meta_file.name))
+            except Exception as e:
+                logger.error(f"Failed to store test file {file_path}: {e}")
 
-    # Archive files if requested
+    # Archive remaining files if requested
     if archive_dir:
         archive_path = Path(archive_dir)
         archive_path.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Archiving {len(loaded_files)} files to {archive_path}")
+        logger.info(f"Archiving remaining {len(loaded_files)} files to {archive_path}")
         
         for file_path in loaded_files:
             try:
@@ -181,6 +220,15 @@ def train_pinn(
                     dest_path = archive_path / f"{file_path.stem}_{timestamp}{file_path.suffix}"
                 
                 shutil.move(str(file_path), str(dest_path))
+                # Also move metadata if it exists
+                meta_file = file_path.with_suffix('.json')
+                if meta_file.exists():
+                    # If the npz file was renamed, we should rename the json too
+                    if dest_path.name != file_path.name:
+                        new_meta_name = f"{Path(dest_path).stem}.json"
+                        shutil.move(str(meta_file), str(archive_path / new_meta_name))
+                    else:
+                        shutil.move(str(meta_file), str(archive_path / meta_file.name))
             except Exception as e:
                 logger.error(f"Failed to archive {file_path}: {e}")
         
@@ -202,6 +250,18 @@ def main():
         type=str,
         default=None,
         help='Directory to move processed files to after training'
+    )
+    train_parser.add_argument(
+        '--test-dir',
+        type=str,
+        default='data/test',
+        help='Directory to save reserved test files for manual inspection'
+    )
+    train_parser.add_argument(
+        '--n-test-files',
+        type=int,
+        default=2,
+        help='Number of files to reserve for testing from each batch'
     )
     train_parser.add_argument(
         '--config',
@@ -236,7 +296,9 @@ def main():
             config_path=args.config,
             data_dir=args.data_dir,
             output_dir=args.output_dir,
-            archive_dir=args.archive_dir if hasattr(args, 'archive_dir') else None,
+            archive_dir=args.archive_dir,
+            test_dir=args.test_dir,
+            n_test_files=args.n_test_files,
             device=args.device
         )
     else:
