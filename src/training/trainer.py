@@ -107,17 +107,44 @@ class PINNTrainer:
         
         # Setup scheduler
         self.scheduler = scheduler
-        if scheduler is None and self.config.get('scheduler') == 'cosine':
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer,
-                T_max=self.config.get('epochs', 200)
-            )
+        if self.scheduler is None:
+            sched_type = self.config.get('scheduler', 'plateau')
+            if sched_type == 'cosine':
+                self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                    self.optimizer,
+                    T_max=self.config.get('epochs', 200)
+                )
+            elif sched_type == 'plateau':
+                self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                    self.optimizer,
+                    mode='min',
+                    factor=self.config.get('lr_factor', 0.5),
+                    patience=self.config.get('lr_patience', 10),
+                    verbose=True
+                )
         
         # Training state
         self.current_epoch = 0
         self.best_val_loss = float('inf')
         self.train_losses = []
         self.val_losses = []
+        
+        # Setup adaptive weighting if enabled
+        self.adaptive_weighting = None
+        if self.config.get('adaptive_weighting', True):
+            from .adaptive_weighting import AdaptiveLossWeighting
+            # We track these keys from PhysicsInformedLoss output
+            loss_keys = ['data_loss', 'parameter_bounds', 'keplers_law', 'duration', 'regularization']
+            self.adaptive_weighting = AdaptiveLossWeighting(
+                loss_keys=loss_keys,
+                init_weights={
+                    'data_loss': self.config.get('data_weight', 1.0),
+                    'parameter_bounds': self.config.get('physics_weight', 0.1),
+                    'keplers_law': self.config.get('kepler_weight', 0.1),
+                    'duration': self.config.get('duration_weight', 0.05),
+                    'regularization': self.config.get('reg_weight', 0.01)
+                }
+            )
     
     def train_epoch(self) -> Dict[str, float]:
         """
@@ -160,7 +187,7 @@ class PINNTrainer:
                 u2=parameters.get('u2', torch.tensor(0.3, device=self.device))
             )
             
-            # Compute loss
+            # Compute loss components
             loss_dict = self.loss_fn(
                 predicted_flux=predicted_flux,
                 target_flux=flux,
@@ -169,10 +196,25 @@ class PINNTrainer:
                 flux_err=flux_err
             )
             
-            loss = loss_dict['total_loss']
+            # Extract flat loss components for weighting
+            flat_loss_dict = {
+                'data_loss': loss_dict['data_loss'],
+                'parameter_bounds': loss_dict['physics_losses']['parameter_bounds'],
+                'keplers_law': loss_dict['physics_losses']['keplers_law'],
+                'duration': loss_dict['physics_losses']['duration'],
+                'regularization': loss_dict['physics_losses']['regularization']
+            }
             
-            # Backward pass
             self.optimizer.zero_grad()
+            
+            if self.adaptive_weighting:
+                # Update weights and get total weighted loss
+                self.adaptive_weighting.update_weights(flat_loss_dict, self.model)
+                loss = self.adaptive_weighting.apply_weights(flat_loss_dict)
+            else:
+                loss = loss_dict['total_loss']
+            
+            # Backward and step
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
@@ -304,7 +346,10 @@ class PINNTrainer:
             
             # Update scheduler
             if self.scheduler is not None:
-                self.scheduler.step()
+                if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                    self.scheduler.step(val_loss if self.val_loader is not None else train_losses['total'])
+                else:
+                    self.scheduler.step()
             
             # Logging
             self.logger.info(

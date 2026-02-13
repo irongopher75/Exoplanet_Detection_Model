@@ -23,11 +23,38 @@ from typing import Dict, Any, Optional, Tuple
 import numpy as np
 
 
+class ResidualBlock(nn.Module):
+    """Residual block for 1D convolutions."""
+    def __init__(self, in_dim: int, out_dim: int, kernel_size: int, dropout: float = 0.1):
+        super().__init__()
+        self.conv1 = nn.Conv1d(in_dim, out_dim, kernel_size, padding=kernel_size//2)
+        self.bn1 = nn.BatchNorm1d(out_dim)
+        self.conv2 = nn.Conv1d(out_dim, out_dim, kernel_size, padding=kernel_size//2)
+        self.bn2 = nn.BatchNorm1d(out_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+        # Identity shortcut
+        self.shortcut = nn.Sequential()
+        if in_dim != out_dim:
+            self.shortcut = nn.Sequential(
+                nn.Conv1d(in_dim, out_dim, kernel_size=1, bias=False),
+                nn.BatchNorm1d(out_dim)
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.silu(self.bn1(self.conv1(x))) # SiLU is Swish
+        out = self.dropout(out)
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.silu(out)
+        return out
+
+
 class TimeSeriesEncoder(nn.Module):
     """
     Encoder network for time series light curves.
     
-    Uses 1D convolutions to extract features from flux time series.
+    Uses 1D ResNet blocks to extract features from flux time series.
     """
     
     def __init__(
@@ -57,15 +84,12 @@ class TimeSeriesEncoder(nn.Module):
         in_dim = input_dim
         
         for hidden_dim, kernel_size in zip(hidden_dims, kernel_sizes):
-            layers.extend([
-                nn.Conv1d(in_dim, hidden_dim, kernel_size, padding=kernel_size//2),
-                nn.BatchNorm1d(hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout)
-            ])
+            layers.append(
+                ResidualBlock(in_dim, hidden_dim, kernel_size, dropout)
+            )
             in_dim = hidden_dim
         
-        self.conv_layers = nn.Sequential(*layers)
+        self.resnet_layers = nn.Sequential(*layers)
         self.output_dim = hidden_dims[-1]
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -82,7 +106,7 @@ class TimeSeriesEncoder(nn.Module):
         torch.Tensor
             Encoded features of shape (batch, hidden_dim, time_steps).
         """
-        return self.conv_layers(x)
+        return self.resnet_layers(x)
 
 
 class AttentionPooling(nn.Module):
@@ -171,7 +195,7 @@ class TransitParameterHead(nn.Module):
         for hidden_dim in hidden_dims:
             layers.extend([
                 nn.Linear(in_dim, hidden_dim),
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Dropout(dropout)
             ])
             in_dim = hidden_dim
@@ -186,6 +210,26 @@ class TransitParameterHead(nn.Module):
         self.b_head = nn.Linear(in_dim, 1)
         self.u1_head = nn.Linear(in_dim, 1)
         self.u2_head = nn.Linear(in_dim, 1)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights for parameter heads to sensible starting points."""
+        # Initialize output weights to small values to start near biases
+        for head in [self.period_head, self.t0_head, self.rp_rs_head, 
+                    self.a_rs_head, self.b_head, self.u1_head, self.u2_head]:
+            nn.init.xavier_uniform_(head.weight, gain=0.01)
+            nn.init.zeros_(head.bias)
+
+        # Better initial biases for realistic starting points
+        # Softplus inverse for a starting point: ln(exp(val) - 1)
+        with torch.no_grad():
+            self.period_head.bias.fill_(1.0) # start around 3 days (softplus(1)+0.5)
+            self.rp_rs_head.bias.fill_(-3.0) # start small (~0.01)
+            self.a_rs_head.bias.fill_(2.0)   # start around 8 stellar radii
+            self.b_head.bias.fill_(0.0)      # center of star
+            self.u1_head.bias.fill_(0.0)     # moderate limb darkening
+            self.u2_head.bias.fill_(0.0)
     
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -203,14 +247,23 @@ class TransitParameterHead(nn.Module):
         """
         features = self.feature_layers(x)
         
-        # Predict parameters with appropriate activations
-        period = F.softplus(self.period_head(features)) + 0.5  # > 0.5 days
+        # Predict parameters with appropriate activations and safety clamps
+        # Period: Softplus ensures > 0, +0.5 for minimum physical period
+        period = F.softplus(torch.clamp(self.period_head(features), max=10.0)) + 0.5
         t0 = self.t0_head(features)  # Unconstrained
-        rp_rs = F.sigmoid(self.rp_rs_head(features)) * 0.2  # 0 to 0.2 (reasonable range)
-        a_rs = F.softplus(self.a_rs_head(features)) + 1.0  # > 1.0
-        b = F.sigmoid(self.b_head(features))  # 0 to 1
-        u1 = F.sigmoid(self.u1_head(features))  # 0 to 1
-        u2 = F.sigmoid(self.u2_head(features))  # 0 to 1
+        
+        # Radius ratio: usually < 0.2
+        rp_rs = F.sigmoid(self.rp_rs_head(features)) * 0.25
+        
+        # Semi-major axis: usually > 1
+        a_rs = F.softplus(torch.clamp(self.a_rs_head(features), max=20.0)) + 1.1
+        
+        # Impact parameter: 0 to 1
+        b = F.sigmoid(self.b_head(features))
+        
+        # Limb darkening: 0 to 1
+        u1 = F.sigmoid(self.u1_head(features))
+        u2 = F.sigmoid(self.u2_head(features))
         
         return {
             'period': period.squeeze(-1),
@@ -410,12 +463,14 @@ class LightCurveDataset(Dataset):
         """
         lc = self.light_curves[idx]
         
-        time = torch.tensor(lc.time, dtype=torch.float32)
-        flux = torch.tensor(lc.flux, dtype=torch.float32)
-        flux_err = torch.tensor(
-            lc.flux_err if lc.flux_err is not None else np.ones_like(lc.flux) * np.nanstd(lc.flux),
-            dtype=torch.float32
-        )
+        time = torch.from_numpy(np.ascontiguousarray(lc.time.astype(np.float32)))
+        flux = torch.from_numpy(np.ascontiguousarray(lc.flux.astype(np.float32)))
+        
+        if lc.flux_err is not None:
+            flux_err_np = np.ascontiguousarray(lc.flux_err.astype(np.float32))
+        else:
+            flux_err_np = np.ascontiguousarray((np.ones_like(lc.flux) * np.nanstd(lc.flux)).astype(np.float32))
+        flux_err = torch.from_numpy(flux_err_np)
         
         # IMPORTANT: Time normalization handling
         # If normalize_time=True, time is scaled to [0, 1] which loses absolute scale.

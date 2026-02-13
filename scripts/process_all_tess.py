@@ -20,6 +20,51 @@ from scripts.download_from_urls import (
     download_fits_file,
     process_fits_file
 )
+from src.utils.ledger import load_ledger, append_to_ledger
+import shutil
+
+
+def cleanup_fully_processed_metadata(metadata_dir: Path, ledger_files: set):
+    """Move metadata files that only contain already-processed URLs to a subfolder."""
+    logger = logging.getLogger(__name__)
+    scanned_dir = metadata_dir / "Scanned_URLs"
+    
+    # Get all top-level metadata files
+    from scripts.download_from_urls import extract_filename_from_url
+    import json
+    
+    metadata_files = [f for f in metadata_dir.glob("*.json") if f.is_file()]
+    if not metadata_files:
+        return
+        
+    moved_count = 0
+    for metadata_file in metadata_files:
+        try:
+            with open(metadata_file, 'r') as f:
+                data = json.load(f)
+            
+            urls = data.get('urls', [])
+            if not urls:
+                continue
+                
+            # Check if all URLs in this file are in the ledger
+            all_in_ledger = True
+            for url in urls:
+                stem = Path(extract_filename_from_url(url)).stem
+                if stem not in ledger_files:
+                    all_in_ledger = False
+                    break
+            
+            if all_in_ledger:
+                scanned_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(metadata_file), str(scanned_dir / metadata_file.name))
+                moved_count += 1
+                
+        except Exception as e:
+            logger.warning(f"Failed to check/move {metadata_file}: {e}")
+            
+    if moved_count > 0:
+        logger.info(f"Optimization: Moved {moved_count} fully-processed metadata files to {scanned_dir}")
 
 
 def process_all_sh_files(
@@ -33,23 +78,9 @@ def process_all_sh_files(
     """Process all TESS .sh files and download/process all URLs."""
     logger = logging.getLogger(__name__)
     
-    # Load all URLs from metadata
-    logger.info("Loading URLs from metadata files...")
-    all_urls = load_urls_from_metadata(metadata_dir, sectors=sectors)
-    
-    if len(all_urls) == 0:
-        logger.error("No URLs found in metadata files.")
-        return
-    
-    logger.info(f"Found {len(all_urls):,} total URLs")
-    
-    # Limit if specified
-    if max_files is not None:
-        all_urls = all_urls[:max_files]
-        logger.info(f"Limiting to {max_files:,} URLs")
-    
-    # Check for existing processed files if resuming
+    # Load ledger and clean up metadata files first for speed
     existing_files = set()
+    ledger_files = set()
     if resume:
         # Search recursively in processed, archive, and test
         dirs_to_check = [
@@ -62,8 +93,25 @@ def process_all_sh_files(
             if d.exists():
                 existing_npz = list(d.glob("**/*.npz"))
                 existing_files.update({f.stem for f in existing_npz})
+        
+        # Also check the persistent ledger
+        ledger_files = load_ledger()
+        existing_files.update(ledger_files)
                 
-        logger.info(f"Found {len(existing_files)} already processed/archived/tested files. These will be skipped.")
+        logger.info(f"Found {len(existing_files)} already processed/archived/tested/ledger files. These will be skipped.")
+        
+        # Optimization: Move fully-processed metadata files to a subfolder
+        cleanup_fully_processed_metadata(metadata_dir, ledger_files)
+    
+    # Load remaining URLs from active metadata files
+    logger.info("Loading URLs from active metadata files...")
+    all_urls = load_urls_from_metadata(metadata_dir, sectors=sectors)
+    
+    if len(all_urls) == 0:
+        logger.error("No URLs found in metadata files.")
+        return
+    
+    logger.info(f"Found {len(all_urls):,} total URLs to check against ledger")
     
     # Create timestamped batch directory
     import datetime
@@ -87,6 +135,10 @@ def process_all_sh_files(
     logger.info("Starting download and processing...")
     
     for url_info in tqdm(all_urls, desc="Processing TESS files"):
+        if max_files is not None and successful_processing >= max_files:
+            logger.info(f"Reached limit of {max_files} processed files. Stopping.")
+            break
+        
         url = url_info['url']
         
         # Extract expected filename
@@ -112,6 +164,9 @@ def process_all_sh_files(
         if processed_path is None:
             failed += 1
             continue
+        
+        # Record in ledger immediately upon successful processing
+        append_to_ledger(expected_stem)
         
         successful_processing += 1
         

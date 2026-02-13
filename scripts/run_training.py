@@ -90,7 +90,8 @@ def main():
         archive_dir=args.archive_dir,
         test_dir=args.test_dir,
         n_test_files=args.n_test_files,
-        device="auto"
+        device="auto",
+        epochs=args.epochs
     )
 
 if __name__ == "__main__":

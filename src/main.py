@@ -23,6 +23,7 @@ from src.utils.config import load_config
 from src.models.pinn import PINN, LightCurveDataset
 from src.training.trainer import PINNTrainer
 from src.ingestion.standardize import load_and_standardize
+from src.utils.ledger import append_to_ledger
 
 
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
@@ -41,7 +42,8 @@ def train_pinn(
     archive_dir: str = None,
     test_dir: str = "data/test",
     n_test_files: int = 2,
-    device: str = "auto"
+    device: str = "auto",
+    epochs: int = None
 ):
     """
     Train PINN model.
@@ -104,6 +106,10 @@ def train_pinn(
     
     logger.info(f"Loaded {len(light_curves)} light curves")
     
+    # Record these files in the ledger to ensure they are marked as 'consumed'
+    if loaded_files:
+        append_to_ledger([f.stem for f in loaded_files])
+    
     if len(light_curves) == 0:
         logger.error("No valid light curves loaded.")
         return
@@ -125,8 +131,9 @@ def train_pinn(
         logger.info(f"Reserved {len(test_files)} light curves for manual testing in {test_dir}")
     
     # Create datasets
-    train_size = int(0.8 * len(light_curves))
-    val_size = len(light_curves) - train_size
+    n_total = len(light_curves)
+    train_size = max(1, int(0.8 * n_total)) if n_total > 0 else 0
+    val_size = n_total - train_size
     
     train_lcs = light_curves[:train_size]
     val_lcs = light_curves[train_size:]
@@ -167,6 +174,10 @@ def train_pinn(
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters())}")
     
     # Create trainer
+    # Merge overrides into config
+    if epochs:
+        train_config['epochs'] = epochs
+        
     trainer = PINNTrainer(
         model=model,
         train_loader=train_loader,
@@ -179,7 +190,7 @@ def train_pinn(
     
     # Train
     trainer.train(
-        epochs=train_config.get('epochs', 200),
+        epochs=epochs if epochs is not None else train_config.get('epochs', 200),
         save_every=train_config.get('save_every', 10)
     )
     
@@ -288,6 +299,12 @@ def main():
         choices=['auto', 'cuda', 'cpu'],
         help='Device to use'
     )
+    train_parser.add_argument(
+        '--epochs',
+        type=int,
+        default=None,
+        help='Number of epochs to train (overrides config)'
+    )
     
     args = parser.parse_args()
     
@@ -299,7 +316,8 @@ def main():
             archive_dir=args.archive_dir,
             test_dir=args.test_dir,
             n_test_files=args.n_test_files,
-            device=args.device
+            device=args.device,
+            epochs=args.epochs if hasattr(args, 'epochs') else None
         )
     else:
         parser.print_help()

@@ -113,6 +113,27 @@ class DataConfig:
     stellar_context: StellarContextConfig = field(default_factory=StellarContextConfig)
 
 
+@dataclass
+class WorkflowConfig:
+    """Base configuration for workflows."""
+    name: str
+    resume: bool = True
+    max_retries: int = 3
+    timeout: Optional[int] = None
+    log_level: str = "INFO"
+
+
+@dataclass
+class PipelineConfig(WorkflowConfig):
+    """Configuration for super_pipeline."""
+    max_files: int = 20
+    sectors: Optional[list] = None
+    epochs: int = 10
+    batch_size: int = 32
+    cleanup: bool = True
+    keep_raw: bool = False
+
+
 def load_config(config_path: str) -> DataConfig:
     """
     Load and validate configuration from YAML file.

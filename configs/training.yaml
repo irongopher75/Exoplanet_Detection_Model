@@ -1,6 +1,6 @@
 epochs: 200
 batch_size: 64
 optimizer: adam
-learning_rate: 0.001
+learning_rate: 0.0001
 scheduler: cosine
 early_stopping: bayesian_evidence

@@ -101,7 +101,9 @@ def mandel_agol_transit_torch(
     if torch.any(eccentricity > 0):
         # Eccentric orbit (simplified)
         true_anomaly = 2 * torch.pi * phase
-        r_sep = a_rs * (1.0 - eccentricity ** 2) / (1.0 + eccentricity * torch.cos(true_anomaly))
+        # Add guard for division by zero and extreme values
+        denom = 1.0 + eccentricity * torch.cos(true_anomaly)
+        r_sep = a_rs * (1.0 - eccentricity ** 2) / torch.clamp(denom, min=1e-6)
     else:
         r_sep = a_rs
     
@@ -114,20 +116,20 @@ def mandel_agol_transit_torch(
     # Transit occurs when z < 1 + rp_rs
     in_transit = z < (1.0 + rp_rs)  # (batch, time_steps)
     
-    # Simplified depth calculation with limb darkening
-    # Ensure u1 and u2 are broadcastable
-    if u1.dim() == 0:
-        u1 = u1.unsqueeze(-1).unsqueeze(-1)  # (1, 1)
-    elif u1.dim() == 1:
-        u1 = u1.unsqueeze(-1)  # (batch, 1)
-    if u2.dim() == 0:
-        u2 = u2.unsqueeze(-1).unsqueeze(-1)  # (1, 1)
-    elif u2.dim() == 1:
-        u2 = u2.unsqueeze(-1)  # (batch, 1)
+    # Ensure all components have proper shape (batch, 1) for broadcasting
+    b_col = b.view(batch_size, 1)
+    rp_rs_col = rp_rs.view(batch_size, 1)
+    u1_col = u1.view(batch_size, 1) if u1.dim() > 0 else u1
+    u2_col = u2.view(batch_size, 1) if u2.dim() > 0 else u2
     
-    depth = rp_rs ** 2 * (1.0 - u1 / 3.0 - u2 / 6.0)  # (batch, 1)
+    # Quadratic Limb Darkening calculation
+    mu_corner = torch.sqrt(torch.clamp(1.0 - b_col**2, min=0, max=1.0))
+    depth = rp_rs_col ** 2 * (1.0 - u1_col * (1.0 - mu_corner) - u2_col * (1.0 - mu_corner)**2)
+    # Clamp depth to physically reasonable range
+    depth = torch.clamp(depth, min=0, max=1.0)
     
     # Apply depth where in transit
+    # depth is (batch, 1), in_transit is (batch, time_steps)
     flux = torch.where(in_transit, 1.0 - depth, flux)
     
     return flux  # (batch, time_steps)
@@ -214,8 +216,11 @@ class PhysicsInformedLoss(nn.Module):
         """
         # 1. Data reconstruction loss
         if flux_err is not None:
-            # Weighted MSE
-            weights = 1.0 / (flux_err ** 2 + 1e-8)
+            # Weighted MSE with numerical stability
+            # Avoid division by zero and limit maximum impact of a single bad point
+            weights = 1.0 / (torch.clamp(flux_err, min=1e-4) ** 2 + 1e-8)
+            # Clip weights to prevent local instabilities from exploding
+            weights = torch.clamp(weights, max=10000.0)
             data_loss = torch.mean(weights * (predicted_flux - target_flux) ** 2)
         else:
             data_loss = self.mse_loss(predicted_flux, target_flux)
@@ -233,6 +238,12 @@ class PhysicsInformedLoss(nn.Module):
         param_loss += torch.mean(torch.clamp(1.0 - parameters['a_rs'], min=0) ** 2)
         # b < 1.0: penalize if b >= 1.0
         param_loss += torch.mean(torch.clamp(parameters['b'] - 1.0, min=0) ** 2)
+        
+        # Add a very small penalty for negative values to all strictly positive parameters
+        # to provide a gradient back to the feasible region
+        for p_name in ['period', 'rp_rs', 'a_rs']:
+             param_loss += 1e-4 * torch.mean(torch.clamp(-parameters[p_name], min=0) ** 2)
+             
         physics_losses['parameter_bounds'] = param_loss
         
         # 2b. Kepler's third law (if stellar parameters available)
@@ -250,7 +261,7 @@ class PhysicsInformedLoss(nn.Module):
             AU = 1.496e11  # m
             
             # Convert to SI
-            P_si = parameters['period'] * day  # seconds
+            P_si = torch.clamp(parameters['period'], min=0.1) * day  # seconds
             M_si = stellar_mass * M_sun  # kg
             R_si = stellar_radius * R_sun  # m
             
@@ -263,7 +274,9 @@ class PhysicsInformedLoss(nn.Module):
             a_rs_expected = a_si / R_si
             
             # Loss: predicted a_rs should match expected
-            kepler_loss = self.mse_loss(parameters['a_rs'], a_rs_expected)
+            # Use log-domain for stability and wide dynamic range
+            kepler_loss = self.mse_loss(torch.log(torch.clamp(parameters['a_rs'], min=1e-3)), 
+                                       torch.log(torch.clamp(a_rs_expected, min=1e-3)))
         physics_losses['keplers_law'] = kepler_loss
         
         # 2c. Transit duration constraint
@@ -273,14 +286,23 @@ class PhysicsInformedLoss(nn.Module):
         if len(time) > 1:
             # Simplified: check that transit duration is reasonable
             # This is a soft constraint
-            time_span = time.max() - time.min()
-            min_duration = time_span / 100.0  # At least 1% of observation span
-            max_duration = time_span / 2.0  # At most 50% of observation span
+            # time_span calculation needs to handle potential batched time
+            t_max = time.max()
+            t_min = time.min()
+            time_span = t_max - t_min
+            
+            min_duration = time_span / 200.0  # At least 0.5% of observation span
+            max_duration = time_span / 1.5   # At most 66% of observation span
             
             # Approximate duration from parameters
-            arg = torch.sqrt((1.0 + parameters['rp_rs']) ** 2 - parameters['b'] ** 2) / parameters['a_rs']
-            arg = torch.clamp(arg, max=0.99)  # Avoid arcsin(>1)
-            duration_approx = (parameters['period'] / torch.pi) * torch.arcsin(arg)
+            # Guard against NaN: clamp arguments to arcsin and sqrt
+            safe_rp_rs = torch.clamp(parameters['rp_rs'], min=0, max=0.5)
+            safe_b = torch.clamp(parameters['b'], min=0, max=0.99)
+            safe_a_rs = torch.clamp(parameters['a_rs'], min=1.1)
+            
+            arg = torch.sqrt(torch.clamp((1.0 + safe_rp_rs) ** 2 - safe_b ** 2, min=1e-6)) / safe_a_rs
+            arg = torch.clamp(arg, max=0.99)  # Avoid arcsin(1.0) for gradient stability
+            duration_approx = (torch.clamp(parameters['period'], min=0.1) / torch.pi) * torch.arcsin(arg)
             
             # Penalize durations outside reasonable range
             duration_loss = torch.mean(
@@ -292,11 +314,11 @@ class PhysicsInformedLoss(nn.Module):
         # 3. Regularization
         reg_loss = 0.0
         for param_name, param_value in parameters.items():
-            # L2 regularization on parameters
+            # L2 regularization on parameters to keep them near reasonable magnitude
             reg_loss += torch.mean(param_value ** 2)
         physics_losses['regularization'] = reg_loss
         
-        # Total loss
+        # Total loss with guard against NaN in weights
         total_loss = (
             self.data_weight * data_loss +
             self.physics_weight * physics_losses['parameter_bounds'] +

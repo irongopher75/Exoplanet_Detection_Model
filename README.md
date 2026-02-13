@@ -113,5 +113,36 @@ python3 scripts/run_training.py --epochs 20 --data-dir data/processed --output-d
 python scripts\run_training.py --epochs 20 --data-dir data\processed --output-dir outputs
 ```
 
-**4. View Results**
-Check `outputs/logs/training.log` for loss curves, or launch the dashboard.
+**4. Automated Super Pipeline (Recommended)**
+Run the entire download, processing, and training workflow in a single command:
+**Mac/Linux**
+```bash
+python3 scripts/super_pipeline.py --max-files 1000 --epochs 200
+```
+
+**Windows**
+```powershell
+python scripts\super_pipeline.py --max-files 1000 --epochs 200
+```
+
+**5. Monitor Data Ledger**
+The system maintains a persistent ledger of all processed datasets to prevent redundant work. You can check the number of processed files or view the latest entries:
+
+**Mac/Linux**
+```bash
+# Total count
+wc -l data/data_ledger.txt
+# Last 10 entries
+tail data/data_ledger.txt
+```
+
+**Windows**
+```powershell
+# Total count
+(Get-Content data\data_ledger.txt).Count
+# Last 10 entries
+Get-Content data\data_ledger.txt -Tail 10
+```
+
+**6. View Results**
+Check `outputs/logs/super_pipeline_*.log` for high-level orchestration or `outputs/logs/process_all_tess.log` for real-time data status. Launch the dashboard to evaluate detected candidates.
