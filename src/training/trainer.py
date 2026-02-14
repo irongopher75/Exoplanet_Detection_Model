@@ -119,8 +119,7 @@ class PINNTrainer:
                     self.optimizer,
                     mode='min',
                     factor=self.config.get('lr_factor', 0.5),
-                    patience=self.config.get('lr_patience', 10),
-                    verbose=True
+                    patience=self.config.get('lr_patience', 10)
                 )
         
         # Training state
