@@ -43,7 +43,8 @@ def train_pinn(
     test_dir: str = "data/test",
     n_test_files: int = 2,
     device: str = "auto",
-    epochs: int = None
+    epochs: int = None,
+    resume: bool = False
 ):
     """
     Train PINN model.
@@ -64,8 +65,13 @@ def train_pinn(
         Number of files to reserve for testing from this batch.
     device : str
         Device to use ('auto', 'cuda', 'cpu').
+    epochs : int, optional
+        Override epochs from config.
+    resume : bool
+        If True, attempts to resume from the latest checkpoint in output_dir/checkpoints.
     """
     import shutil
+    import re
     logger = setup_logging()
     logger.info("Starting PINN training")
     
@@ -80,6 +86,36 @@ def train_pinn(
         device = torch.device(device)
     
     logger.info(f"Using device: {device}")
+
+    # Create model first so we can load weights if resuming
+    model = PINN(
+        input_dim=3,
+        encoder_dims=train_config.get('encoder_dims', [64, 128, 256]),
+        encoder_kernels=train_config.get('encoder_kernels', [5, 5, 5]),
+        param_head_dims=train_config.get('param_head_dims', [256, 128, 64]),
+        dropout=train_config.get('dropout', 0.1)
+    )
+    
+    # Resume logic
+    checkpoint_to_load = None
+    if resume:
+        checkpoint_dir = Path(output_dir) / "checkpoints"
+        if checkpoint_dir.exists():
+            # Look for best_model.pt or the latest checkpoint
+            checkpoints = list(checkpoint_dir.glob("checkpoint_epoch_*.pt"))
+            if checkpoints:
+                # Sort by epoch number
+                def get_epoch(p):
+                    match = re.search(r'epoch_(\d+)', p.name)
+                    return int(match.group(1)) if match else 0
+                
+                checkpoints.sort(key=get_epoch, reverse=True)
+                checkpoint_to_load = checkpoints[0]
+            elif (checkpoint_dir / "best_model.pt").exists():
+                checkpoint_to_load = checkpoint_dir / "best_model.pt"
+            
+    if checkpoint_to_load:
+        logger.info(f"💾 Resuming from checkpoint: {checkpoint_to_load}")
     
     # Load data
     logger.info(f"Loading data from {data_dir}")
@@ -162,15 +198,6 @@ def train_pinn(
         num_workers=0
     )
     
-    # Create model
-    model = PINN(
-        input_dim=3,
-        encoder_dims=train_config.get('encoder_dims', [64, 128, 256]),
-        encoder_kernels=train_config.get('encoder_kernels', [5, 5, 5]),
-        param_head_dims=train_config.get('param_head_dims', [256, 128, 64]),
-        dropout=train_config.get('dropout', 0.1)
-    )
-    
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters())}")
     
     # Create trainer
@@ -187,6 +214,10 @@ def train_pinn(
         logger=logger,
         config=train_config
     )
+    
+    # Load checkpoint if requested
+    if checkpoint_to_load:
+        trainer.load_checkpoint(checkpoint_to_load.name)
     
     # Train
     trainer.train(
@@ -305,6 +336,11 @@ def main():
         default=None,
         help='Number of epochs to train (overrides config)'
     )
+    train_parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Resume training from the latest checkpoint'
+    )
     
     args = parser.parse_args()
     
@@ -317,7 +353,8 @@ def main():
             test_dir=args.test_dir,
             n_test_files=args.n_test_files,
             device=args.device,
-            epochs=args.epochs if hasattr(args, 'epochs') else None
+            epochs=args.epochs if hasattr(args, 'epochs') else None,
+            resume=args.resume
         )
     else:
         parser.print_help()

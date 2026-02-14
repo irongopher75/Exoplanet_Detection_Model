@@ -70,6 +70,11 @@ def main():
     parser.add_argument('--no-cleanup', action='store_true', help='Skip the data cleanup step')
     parser.add_argument('--keep-raw', action='store_true', help='Keep raw FITS files (only clean processed NPZ)')
     
+    # Kaggle/Compatibility params
+    parser.add_argument('--mode', type=str, default='full', help='Pipeline mode (e.g., full)')
+    parser.add_argument('--gpu', action='store_true', help='Enable GPU training (default in auto mode)')
+    parser.add_argument('--resume', action='store_true', help='Resume from the latest checkpoint')
+    
     args = parser.parse_args()
     
     # Standardized Logging
@@ -116,6 +121,9 @@ def main():
             "--batch-size", str(args.batch_size),
             "--data-dir", "data/processed/tess"
         ]
+        
+        if args.resume:
+            train_cmd.append("--resume")
         
         success, _ = run_command(train_cmd, state.current_step)
         if not success:

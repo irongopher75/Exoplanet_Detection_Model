@@ -67,6 +67,7 @@ def main():
     parser.add_argument('--archive-dir', type=str, default=None, help='Directory to move processed files to after training')
     parser.add_argument('--test-dir', type=str, default='data/test', help='Directory to reserve test files')
     parser.add_argument('--n-test-files', type=int, default=2, help='Number of files to reserve for testing')
+    parser.add_argument('--resume', action='store_true', help='Resume training from the latest checkpoint')
     
     args = parser.parse_args()
     
@@ -91,7 +92,8 @@ def main():
         test_dir=args.test_dir,
         n_test_files=args.n_test_files,
         device="auto",
-        epochs=args.epochs
+        epochs=args.epochs,
+        resume=args.resume
     )
 
 if __name__ == "__main__":
