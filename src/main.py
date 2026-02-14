@@ -123,10 +123,20 @@ def train_pinn(
     
     # Find all light curve files
     lc_files = list(data_path.glob("**/*.npz"))
-    logger.info(f"Found {len(lc_files)} light curve files")
+    
+    # Filter by ledger to ensure we only use "new" data
+    from src.utils.ledger import load_ledger
+    ledger = load_ledger()
+    initial_count = len(lc_files)
+    lc_files = [f for f in lc_files if f.stem not in ledger]
+    
+    if initial_count > len(lc_files):
+        logger.info(f"Filtered out {initial_count - len(lc_files)} files already present in the ledger.")
+        
+    logger.info(f"Found {len(lc_files)} new light curve files")
     
     if len(lc_files) == 0:
-        logger.error("No light curve files found. Run data download first.")
+        logger.error("No new light curve files found. Run data download first.")
         return
     
     # Load and standardize light curves

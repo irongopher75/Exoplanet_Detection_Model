@@ -403,14 +403,52 @@ class PINNTrainer:
         checkpoint_path = self.output_dir / filename
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        try:
+            # Try strict loading first
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.logger.info(f"Loaded checkpoint strictly: {checkpoint_path}")
+        except RuntimeError as e:
+            self.logger.warning(f"⚠️ Architecture mismatch detected: {e}")
+            self.logger.info("Attempting to load compatible weights (non-strict)...")
+            
+            # Load what we can (e.g. parameter heads)
+            msg = self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+            self.logger.info(f"Loaded compatible weights. Missing: {len(msg.missing_keys)}, Unexpected: {len(msg.unexpected_keys)}")
+            
+            # Re-initialize optimizer/scheduler since architecture changed
+            self.logger.info("Resetting optimizer and scheduler for new architecture...")
+            self.optimizer = optim.Adam(
+                self.model.parameters(),
+                lr=self.config.get('learning_rate', 1e-3)
+            )
+            if self.scheduler is not None:
+                # Re-create scheduler based on type
+                sched_type = self.config.get('scheduler', 'plateau')
+                if sched_type == 'plateau':
+                    self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                        self.optimizer,
+                        mode='min',
+                        factor=self.config.get('lr_factor', 0.5),
+                        patience=self.config.get('lr_patience', 10)
+                    )
+            # We DON'T load the optimizer state as it won't match the new parameters
+        
+        # Load other state
+        if 'optimizer_state_dict' in checkpoint and 'RuntimeError' not in locals():
+             try:
+                 self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+             except:
+                 self.logger.warning("Could not load optimizer state (likely due to architecture change).")
+
         self.current_epoch = checkpoint['epoch']
         self.best_val_loss = checkpoint['best_val_loss']
         self.train_losses = checkpoint.get('train_losses', [])
         self.val_losses = checkpoint.get('val_losses', [])
         
-        if self.scheduler is not None and 'scheduler_state_dict' in checkpoint:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        if self.scheduler is not None and 'scheduler_state_dict' in checkpoint and 'RuntimeError' not in locals():
+            try:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            except:
+                self.logger.warning("Could not load scheduler state.")
         
-        self.logger.info(f"Loaded checkpoint: {checkpoint_path}")
+        self.logger.info(f"Successfully resumed from epoch {self.current_epoch}")
