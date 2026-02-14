@@ -152,10 +152,6 @@ def train_pinn(
     
     logger.info(f"Loaded {len(light_curves)} light curves")
     
-    # Record these files in the ledger to ensure they are marked as 'consumed'
-    if loaded_files:
-        append_to_ledger([f.stem for f in loaded_files])
-    
     if len(light_curves) == 0:
         logger.error("No valid light curves loaded.")
         return
@@ -236,6 +232,10 @@ def train_pinn(
     )
     
     logger.info("Training complete")
+    
+    # Record these files in the ledger to ensure they are marked as 'consumed'
+    if loaded_files:
+        append_to_ledger([f.stem for f in loaded_files])
     
     # Handle Test Data Reservation
     if test_files and test_dir:

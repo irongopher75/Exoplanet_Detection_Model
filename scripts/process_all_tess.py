@@ -165,9 +165,6 @@ def process_all_sh_files(
             failed += 1
             continue
         
-        # Record in ledger immediately upon successful processing
-        append_to_ledger(expected_stem)
-        
         successful_processing += 1
         
         # Log progress periodically
