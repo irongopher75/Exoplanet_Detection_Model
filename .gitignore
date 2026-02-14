@@ -22,8 +22,16 @@ wheels/
 *.egg
 
 # Data
-data/
-!data/.gitkeep
+data/raw/
+data/processed/
+data/archive/
+data/test/
+data/metadata/*
+!data/metadata/.gitkeep
+!data/metadata/tesscurl_sector_*.json
+data/metadata/*_processed_meta.json
+data/metadata/Scanned_URLs/
+data/metadata/extraction_summary.json
 
 # Outputs and Logs
 outputs/
